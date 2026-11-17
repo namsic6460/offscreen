@@ -1,5 +1,6 @@
-// Thin wrapper around the git CLI. Never goes through a shell.
-import { execFileSync } from 'node:child_process';
+// Thin async wrapper around the git CLI. Never goes through a shell.
+// Async so several repositories (workspace mode) can be inspected in parallel.
+import { execFile } from 'node:child_process';
 
 const ENV = {
   ...process.env,
@@ -12,34 +13,31 @@ const ENV = {
 export class GitError extends Error {}
 
 /**
- * Run git and return stdout (utf8).
- * - allowFail: return null when git exits non-zero (timeouts/missing git still throw).
+ * Run git and resolve stdout (utf8).
+ * - allowFail: resolve null when git exits non-zero (timeouts/missing git still reject).
  */
-export function git(cwd, args, { timeout = 5000, allowFail = false, input } = {}) {
-  try {
-    return execFileSync('git', ['-c', 'core.quotepath=false', ...args], {
-      cwd,
-      env: ENV,
-      input,
-      encoding: 'utf8',
-      timeout,
-      maxBuffer: 256 * 1024 * 1024,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true,
-    });
-  } catch (e) {
-    const timedOut = e.code === 'ETIMEDOUT' || (e.signal && e.status == null);
-    if (allowFail && !timedOut && typeof e.status === 'number') return null;
-    const why = timedOut ? `timed out after ${timeout}ms` : (e.stderr || e.message || '').toString().trim();
-    throw new GitError(`git ${args.join(' ')}: ${why}`);
-  }
+export function git(cwd, args, { timeout = 5000, allowFail = false } = {}) {
+  return new Promise((resolve, reject) => {
+    execFile(
+      'git',
+      ['-c', 'core.quotepath=false', ...args],
+      { cwd, env: ENV, encoding: 'utf8', timeout, maxBuffer: 256 * 1024 * 1024, windowsHide: true },
+      (err, stdout, stderr) => {
+        if (!err) return resolve(stdout);
+        const timedOut = err.killed || err.signal != null;
+        if (allowFail && !timedOut && typeof err.code === 'number') return resolve(null);
+        const why = timedOut ? `timed out after ${timeout}ms` : (stderr || err.message || '').toString().trim();
+        reject(new GitError(`git ${args.join(' ')}: ${why}`));
+      },
+    );
+  });
 }
 
 /** Resolve repository paths for cwd, or null when cwd is not inside a work tree. */
-export function repoInfo(cwd) {
+export async function repoInfo(cwd) {
   let out;
   try {
-    out = git(cwd, ['rev-parse', '--absolute-git-dir', '--show-toplevel'], { allowFail: true });
+    out = await git(cwd, ['rev-parse', '--absolute-git-dir', '--show-toplevel'], { allowFail: true });
   } catch {
     return null; // git missing, cwd missing, ...
   }

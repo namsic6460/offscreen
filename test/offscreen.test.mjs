@@ -299,6 +299,7 @@ test('25. Claude hook config parses and points at the script', () => {
   for (const ev of ['UserPromptSubmit', 'PostToolUse', 'Stop']) {
     assert.match(cfg.hooks[ev][0].hooks[0].command, /\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/offscreen\.mjs" (diff|save)$/);
   }
+  assert.equal(cfg.hooks.PostToolUse[0].hooks[0].async, true);
   const re = new RegExp(cfg.hooks.PostToolUse[0].matcher);
   for (const tool of ['Bash', 'PowerShell', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'mcp__idea__apply_patch']) assert.ok(re.test(tool), tool);
   for (const tool of ['Read', 'Grep', 'Glob', 'TodoWrite']) assert.ok(!re.test(tool), tool);

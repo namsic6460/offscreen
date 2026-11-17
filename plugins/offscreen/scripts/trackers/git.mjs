@@ -67,12 +67,19 @@ function detectOp(gitDir) {
   return null;
 }
 
-function snapshot(ctx) {
+async function snapshot(ctx) {
   const { cwd, top, gitDir, config } = ctx;
   const L = config.limits;
   const ignored = makeMatcher(config.ignore);
 
-  const status = parseStatus(git(cwd, ['status', '--porcelain=v2', '--branch', '-z', `--untracked-files=${config.untracked}`], { timeout: 8000 }));
+  const [statusOut, refs, top1] = await Promise.all([
+    git(cwd, ['status', '--porcelain=v2', '--branch', '-z', `--untracked-files=${config.untracked}`], { timeout: 8000 }),
+    git(cwd, ['for-each-ref', '--format=%(refname)%09%(objectname)', 'refs/heads', 'refs/stash']),
+    // Newest reflog entry at save time: diff lists entries above this marker, which is
+    // exact even when the user acts within the same second as the save.
+    git(cwd, [...REFLOG, '-n', '1', 'HEAD', '--'], { allowFail: true }),
+  ]);
+  const status = parseStatus(statusOut);
 
   const files = {};
   const toHash = [];
@@ -94,7 +101,6 @@ function snapshot(ctx) {
 
   const branches = {};
   let hasStash = false;
-  const refs = git(cwd, ['for-each-ref', '--format=%(refname)%09%(objectname)', 'refs/heads', 'refs/stash']);
   for (const line of refs.split('\n')) {
     if (!line) continue;
     const [ref, oid] = line.split('\t');
@@ -104,7 +110,7 @@ function snapshot(ctx) {
 
   const stash = [];
   if (hasStash) {
-    const out = git(cwd, ['stash', 'list', '--format=%H%x09%gs'], { allowFail: true }) || '';
+    const out = (await git(cwd, ['stash', 'list', '--format=%H%x09%gs'], { allowFail: true })) || '';
     for (const line of out.split('\n')) {
       if (!line) continue;
       const tab = line.indexOf('\t');
@@ -112,9 +118,6 @@ function snapshot(ctx) {
     }
   }
 
-  // Newest reflog entry at save time: diff lists entries above this marker, which is
-  // exact even when the user acts within the same second as the save.
-  const top1 = git(cwd, [...REFLOG, '-n', '1', 'HEAD', '--'], { allowFail: true });
   const reflogTop = top1 ? top1.split('\n')[0] || null : null;
 
   return { head: status.head, branch: status.branch, branches, stash, files, hashed, op: detectOp(gitDir), reflogTop };
@@ -127,28 +130,24 @@ const REFLOG = ['reflog', 'show', '--date=unix', '--format=%gd%x09%h%x09%gs'];
 
 const dotted = (st) => st.replace(/ /g, '.');
 
-function oneline(cwd, range, max) {
-  const out = git(cwd, ['log', '--no-decorate', '--format=%h %s', '-n', String(max), range, '--'], { allowFail: true });
+async function oneline(cwd, range, max) {
+  const out = await git(cwd, ['log', '--no-decorate', '--format=%h %s', '-n', String(max), range, '--'], { allowFail: true });
   return out ? out.split('\n').filter(Boolean) : [];
 }
 
-function count(cwd, range) {
-  const out = git(cwd, ['rev-list', '--count', range, '--'], { allowFail: true });
+async function count(cwd, range) {
+  const out = await git(cwd, ['rev-list', '--count', range, '--'], { allowFail: true });
   return out ? parseInt(out, 10) || 0 : 0;
 }
 
-function isAncestor(cwd, a, b) {
-  return git(cwd, ['merge-base', '--is-ancestor', a, b], { allowFail: true }) !== null;
+async function commitExists(cwd, h) {
+  return (await git(cwd, ['cat-file', '-e', `${h}^{commit}`], { allowFail: true })) !== null;
 }
 
-function commitExists(cwd, h) {
-  return git(cwd, ['cat-file', '-e', `${h}^{commit}`], { allowFail: true }) !== null;
-}
-
-function reflogSection(prev, cur, ctx, t) {
+async function reflogSection(prev, cur, ctx, t) {
   const { cwd, prevSavedAt, config } = ctx;
   if (prev.reflogTop === cur.reflogTop) return null;
-  const out = git(cwd, [...REFLOG, '-n', String(config.limits.maxReflog + 50), 'HEAD', '--'], { allowFail: true });
+  const out = await git(cwd, [...REFLOG, '-n', String(config.limits.maxReflog + 50), 'HEAD', '--'], { allowFail: true });
   if (!out) return null;
   const all = out.split('\n').filter(Boolean);
   // Marker found -> everything above it is new. Not found (expired, rewritten, first
@@ -171,13 +170,13 @@ function refLabel(snap, t) {
   return snap.branch || t('detached', { h: short(snap.head) });
 }
 
-function headSections(prev, cur, ctx, t) {
+async function headSections(prev, cur, ctx, t) {
   const { cwd, config } = ctx;
   const max = config.limits.maxCommits;
   if (prev.head === cur.head) return [];
   const switched = prev.branch !== cur.branch;
   const ref = refLabel(cur, t);
-  const subject = cur.head ? (git(cwd, ['log', '-1', '--format=%s', cur.head, '--'], { allowFail: true }) || '').trim() : '';
+  const subject = cur.head ? ((await git(cwd, ['log', '-1', '--format=%s', cur.head, '--'], { allowFail: true })) || '').trim() : '';
   const headLine = cur.head
     ? t('headLine', { from: short(prev.head), to: `${short(cur.head)} ${subject}`.trim() })
     : t('headUnborn');
@@ -185,27 +184,25 @@ function headSections(prev, cur, ctx, t) {
 
   if (!cur.head) return [sec(t('sHead'), [headLine], t('sHead'))];
   if (!prev.head) {
-    const n = count(cwd, cur.head);
-    return [sec(t(switched ? 'addedSwitch' : 'added', { ref, n }), [headLine, ...withMore(oneline(cwd, cur.head, max), n, max, t)], t('sCommits', { n }))];
+    const [n, list] = await Promise.all([count(cwd, cur.head), oneline(cwd, cur.head, max)]);
+    return [sec(t(switched ? 'addedSwitch' : 'added', { ref, n }), [headLine, ...withMore(list, n, max, t)], t('sCommits', { n }))];
   }
-  if (!commitExists(cwd, prev.head)) {
+  if (!(await commitExists(cwd, prev.head))) {
     return [sec(t('sHead'), [headLine, t('unknownPrev', { h: short(prev.head) })], t('sHead'))];
   }
-  const range = (a, b) => `${a}..${b}`;
-  if (isAncestor(cwd, prev.head, cur.head)) {
-    const n = count(cwd, range(prev.head, cur.head));
-    const list = withMore(oneline(cwd, range(prev.head, cur.head), max), n, max, t);
-    return [sec(t(switched ? 'addedSwitch' : 'added', { ref, n }), [headLine, ...list], t('sCommits', { n }))];
+  const fwd = `${prev.head}..${cur.head}`;
+  const back = `${cur.head}..${prev.head}`;
+  const [added, removed, plusRaw, minusRaw] = await Promise.all([count(cwd, fwd), count(cwd, back), oneline(cwd, fwd, max), oneline(cwd, back, max)]);
+  if (removed === 0) {
+    const list = withMore(plusRaw, added, max, t);
+    return [sec(t(switched ? 'addedSwitch' : 'added', { ref, n: added }), [headLine, ...list], t('sCommits', { n: added }))];
   }
-  if (isAncestor(cwd, cur.head, prev.head)) {
-    const n = count(cwd, range(cur.head, prev.head));
-    const list = withMore(oneline(cwd, range(cur.head, prev.head), max), n, max, t).map((l) => `- ${l}`);
-    return [sec(t(switched ? 'removedSwitch' : 'movedBack', { ref, n }), [headLine, ...list], t('sHead'))];
+  if (added === 0) {
+    const list = withMore(minusRaw, removed, max, t).map((l) => `- ${l}`);
+    return [sec(t(switched ? 'removedSwitch' : 'movedBack', { ref, n: removed }), [headLine, ...list], t('sHead'))];
   }
-  const added = count(cwd, range(prev.head, cur.head));
-  const removed = count(cwd, range(cur.head, prev.head));
-  const plus = withMore(oneline(cwd, range(prev.head, cur.head), max), added, max, t).map((l) => `+ ${l}`);
-  const minus = withMore(oneline(cwd, range(cur.head, prev.head), max), removed, max, t).map((l) => `- ${l}`);
+  const plus = withMore(plusRaw, added, max, t).map((l) => `+ ${l}`);
+  const minus = withMore(minusRaw, removed, max, t).map((l) => `- ${l}`);
   if (switched) {
     return [
       sec(t('addedSwitch', { ref, n: added }), [headLine, ...plus], t('sCommits', { n: added })),
@@ -295,11 +292,10 @@ function filesSection(prev, cur, ctx, t) {
   return { title: t('worktree'), lines, summary: t('sFiles', { n: total }) };
 }
 
-function diff(prev, cur, ctx) {
+async function diff(prev, cur, ctx) {
   const t = ctx.t;
   const sections = [];
-  const reflog = reflogSection(prev, cur, ctx, t);
-  const heads = headSections(prev, cur, ctx, t);
+  const [reflog, heads] = await Promise.all([reflogSection(prev, cur, ctx, t), headSections(prev, cur, ctx, t)]);
   if (reflog) sections.push(reflog);
   sections.push(...branchSections(prev, cur, t));
   sections.push(...heads);

@@ -71,11 +71,18 @@ codex plugin add offscreen@offscreen
 ## 동작 원리
 
 ```
-[AI 턴]   PostToolUse (Bash/PowerShell/Edit/Write/apply_patch/mcp__*) → save   AI 자신의 변경은 기준선에 흡수
+[AI 턴]   PostToolUse (Bash/PowerShell/Edit/Write/apply_patch/mcp__*) → save (백그라운드)   AI 자신의 변경은 기준선에 흡수
           Stop                                                           → save
 [사용자 수동 작업 — 아무것도 실행되지 않음]
 [프롬프트 제출]  UserPromptSubmit → diff → 변경이 있으면 additionalContext로 주입 → 즉시 save
 ```
+
+### 감시 대상: 세션 폴더
+
+- 세션 폴더(Claude Code는 `CLAUDE_PROJECT_DIR`, Codex는 세션 `cwd`)가 **git 저장소 안**이면 그 저장소 하나를 감시합니다.
+- 세션 폴더가 **저장소가 아니면**(여러 저장소를 모아 둔 상위 폴더 등) 하위 `workspace.scanDepth`(기본 2) 단계까지 저장소를 찾아 모두 감시합니다. 저장소 안으로는 더 들어가지 않고, 숨김 폴더·`node_modules`·`build`·`dist` 등은 건너뜁니다. 최대 `workspace.maxRepos`(기본 30)개, 병렬로 검사합니다.
+- 여러 저장소일 때는 저장소별로 `# Repository: api` 제목을 붙여 한 블록으로 전달합니다. 처음 발견된 저장소는 기준선만 저장하고 다음부터 보고합니다.
+- PostToolUse 저장은 백그라운드로 돌아 AI 작업을 막지 않고, 늦게 끝난 오래된 저장이 더 최신 기준선을 덮어쓰지 않습니다.
 
 - 스냅샷: `$(git rev-parse --git-dir)/offscreen/` — 커밋에 섞이지 않고, 저장소·worktree별로 분리됩니다.
   - `sessions/<session_id>.json` — 세션별 기준선 (7일 지나면 정리)
@@ -97,7 +104,9 @@ codex plugin add offscreen@offscreen
 
 ## 설정
 
-우선순위: `<repo>/.claude/offscreen.json` 또는 `<repo>/.codex/offscreen.json` > `~/.claude/offscreen.json` 또는 `~/.codex/offscreen.json` > 기본값
+우선순위: `<repo>/.claude/offscreen.json` 또는 `<repo>/.codex/offscreen.json` > (상위 폴더 세션일 때) `<세션 폴더>/.claude/offscreen.json` > `~/.claude/offscreen.json` 또는 `~/.codex/offscreen.json` > 기본값
+
+상위 폴더 세션에서 `language`·`notify`·`maxChars`·`workspace`는 세션 폴더 쪽 설정을 쓰고, 나머지는 저장소별 설정이 우선합니다(예: 특정 저장소만 `"enabled": false`).
 
 ```json
 {
@@ -107,7 +116,8 @@ codex plugin add offscreen@offscreen
   "trackers": ["git"],
   "untracked": "all",
   "limits": { "maxReflog": 15, "maxCommits": 10, "maxFiles": 30, "maxHashFiles": 500, "maxHashBytes": 8388608, "maxChars": 4000 },
-  "ignore": ["dist/**", "*.log"]
+  "ignore": ["dist/**", "*.log"],
+  "workspace": { "scanDepth": 2, "maxRepos": 30 }
 }
 ```
 
@@ -120,6 +130,8 @@ codex plugin add offscreen@offscreen
 | `limits.maxHashBytes` | 이보다 큰 파일은 내용 대신 크기+mtime으로 비교 |
 | `limits.maxChars` | 주입 텍스트 최대 길이. 넘으면 뒤를 자르고 `(truncated …)` 표시 |
 | `ignore` | 보고에서 제외할 경로 glob. `*`, `**`, `?` 지원. `/` 없는 패턴(`*.log`, `node_modules`)은 어느 깊이에서든 일치, `/`로 시작하면 저장소 루트 기준 |
+| `workspace.scanDepth` | 세션 폴더가 저장소가 아닐 때 하위 저장소를 찾을 깊이. `0`이면 상위 폴더 세션에서는 동작 안 함 |
+| `workspace.maxRepos` | 상위 폴더 세션에서 감시할 최대 저장소 수 |
 
 ## 한계
 
@@ -128,6 +140,8 @@ codex plugin add offscreen@offscreen
 - **세션 간 공유**: 같은 저장소의 다른 세션이 바꾼 내용도 보고됩니다(의도된 동작). 표현이 "user or another agent session"인 이유입니다.
 - **submodule**: 상위 저장소의 status에 보이는 범위만 추적합니다.
 - **대형 저장소**: `git status`가 8초를 넘으면 그 턴은 건너뛰고 `error.log`에 남깁니다.
+- **상위 폴더 세션의 지연**: 저장소 14개 기준 프롬프트 제출 시 약 1.5초가 더해집니다(Windows 실측). 큰 저장소는 `untracked: "normal"`이나 `ignore`로 줄일 수 있습니다.
+- **세션 폴더 밖 저장소**: AI가 세션 폴더 밖의 저장소를 고치면 그 변경은 기준선에 흡수되지 않습니다.
 - **Codex**: 훅은 `/hooks`에서 신뢰해야 동작합니다. Codex CLI 0.167(Windows)과 Claude Code 2.1.325(Windows)에서 실세션으로 검증했습니다.
 
 ## 확장 (tracker)
@@ -137,8 +151,8 @@ codex plugin add offscreen@offscreen
 ```js
 export default {
   name: 'docker',
-  snapshot(ctx) { /* 직렬화 가능한 현재 상태, 해당 없으면 null */ },  // ctx = { cwd, top, gitDir, config, t }
-  diff(prev, cur, ctx) { return [{ title: 'Containers', lines: ['+ web (up)'], summary: 'docker' }]; },
+  async snapshot(ctx) { /* 직렬화 가능한 현재 상태, 해당 없으면 null */ },  // ctx = { cwd, top, gitDir, config, t }
+  async diff(prev, cur, ctx) { return [{ title: 'Containers', lines: ['+ web (up)'], summary: 'docker' }]; },
 };
 ```
 
@@ -158,7 +172,7 @@ plugins/offscreen/
   hooks/hooks.json, hooks/codex.json
   skills/offscreen-show, skills/offscreen-reset
   scripts/offscreen.mjs             진입점: save | diff | show | reset
-  scripts/lib/{git,store,config,format,glob}.mjs
+  scripts/lib/{git,store,config,format,glob,workspace}.mjs
   scripts/trackers/git.mjs
 test/
 ```

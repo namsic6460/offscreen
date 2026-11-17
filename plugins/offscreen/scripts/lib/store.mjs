@@ -71,9 +71,18 @@ export function loadSnapshot(gitDir, sessionId) {
   return valid(l) ? l : null;
 }
 
+/**
+ * Save unless a snapshot taken *later* is already there. PostToolUse saves run in the
+ * background, so an older save can finish after a newer one; it must not win.
+ */
 export function saveSnapshot(gitDir, sessionId, snap) {
-  if (sessionId) writeJsonAtomic(sessionFile(gitDir, sessionId), snap);
-  writeJsonAtomic(latestFile(gitDir), snap);
+  const put = (file) => {
+    const existing = readJson(file);
+    if (existing && typeof existing.takenAtMs === 'number' && typeof snap.takenAtMs === 'number' && existing.takenAtMs > snap.takenAtMs) return;
+    writeJsonAtomic(file, snap);
+  };
+  if (sessionId) put(sessionFile(gitDir, sessionId));
+  put(latestFile(gitDir));
   if (sessionId) pruneSessions(gitDir);
 }
 

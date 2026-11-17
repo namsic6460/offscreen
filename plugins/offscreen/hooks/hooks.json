@@ -4,7 +4,11 @@
     "UserPromptSubmit": [
       {
         "hooks": [
-          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/offscreen.mjs\" diff", "timeout": 10 }
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/offscreen.mjs\" diff",
+            "timeout": 10
+          }
         ]
       }
     ],
@@ -12,14 +16,23 @@
       {
         "matcher": "^(Bash|PowerShell|Edit|Write|MultiEdit|NotebookEdit|mcp__.*)$",
         "hooks": [
-          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/offscreen.mjs\" save", "timeout": 10 }
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/offscreen.mjs\" save",
+            "timeout": 10,
+            "async": true
+          }
         ]
       }
     ],
     "Stop": [
       {
         "hooks": [
-          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/offscreen.mjs\" save", "timeout": 10 }
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/offscreen.mjs\" save",
+            "timeout": 10
+          }
         ]
       }
     ]

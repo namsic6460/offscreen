@@ -25,8 +25,9 @@ export const ENV = {
 };
 delete ENV.CLAUDE_PROJECT_DIR;
 
-export function makeRepo() {
-  const dir = fs.mkdtempSync(path.join(SANDBOX, 'repo-'));
+export function makeRepo(at) {
+  const dir = at || fs.mkdtempSync(path.join(SANDBOX, 'repo-'));
+  fs.mkdirSync(dir, { recursive: true });
   const g = (...args) => execFileSync('git', args, { cwd: dir, env: ENV, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   g('init', '-q');
   const write = (file, content) => {
@@ -46,10 +47,10 @@ export function tmpDir() {
 }
 
 /** Run a hook mode with Claude-style stdin; returns { status, stdout, json, context }. */
-export function hook(dir, mode, { session = 'sess-1', event = 'UserPromptSubmit' } = {}) {
+export function hook(dir, mode, { session = 'sess-1', event = 'UserPromptSubmit', env = {} } = {}) {
   const r = spawnSync(process.execPath, [SCRIPT, mode], {
     input: JSON.stringify({ cwd: dir, session_id: session, hook_event_name: event }),
-    env: ENV,
+    env: { ...ENV, ...env },
     encoding: 'utf8',
   });
   const stdout = r.stdout.trim();

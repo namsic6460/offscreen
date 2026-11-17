@@ -6,16 +6,21 @@
 //   show  (manual)                   - preview pending changes + recently reported history
 //   reset (manual)                   - make the current state the baseline for every session
 //
+// The watched root is the session folder. If it is inside a git repository, that repository
+// is watched; otherwise every repository found below it (workspace mode).
+//
 // Hooks must never block the user: every path exits 0, errors go to <git-dir>/offscreen/error.log.
 import fs from 'node:fs';
-import { repoInfo } from './lib/git.mjs';
+import path from 'node:path';
 import { loadConfig } from './lib/config.mjs';
 import { makeT, render, summarize } from './lib/format.mjs';
 import { SNAPSHOT_VERSION, appendHistory, loadSnapshot, logError, readHistory, resetSnapshots, saveSnapshot } from './lib/store.mjs';
+import { pool, resolveRepos } from './lib/workspace.mjs';
 import gitTracker from './trackers/git.mjs';
 
 const TRACKERS = { git: gitTracker };
 const MODES = ['save', 'diff', 'show', 'reset'];
+const CONCURRENCY = 8;
 
 function readStdin(timeoutMs = 3000) {
   return new Promise((resolve) => {
@@ -51,23 +56,24 @@ function out(text) {
   fs.writeSync(1, text.endsWith('\n') ? text : `${text}\n`);
 }
 
-function takeSnapshot(ctx) {
+async function takeSnapshot(ctx) {
+  const takenAtMs = Date.now(); // before reading any state
   const trackers = {};
   for (const name of ctx.config.trackers) {
     const tr = TRACKERS[name];
     if (!tr) continue;
-    const s = tr.snapshot(ctx); // throws on git failure/timeout -> caller skips this turn
+    const s = await tr.snapshot(ctx); // throws on git failure/timeout -> caller skips this repo
     if (s != null) trackers[name] = s;
   }
-  return { version: SNAPSHOT_VERSION, savedAt: Math.floor(Date.now() / 1000), trackers };
+  return { version: SNAPSHOT_VERSION, savedAt: Math.floor(takenAtMs / 1000), takenAtMs, trackers };
 }
 
-function diffSnapshots(prev, cur, ctx) {
+async function diffSnapshots(prev, cur, ctx) {
   const sections = [];
   for (const name of ctx.config.trackers) {
     const tr = TRACKERS[name];
     if (!tr || !prev.trackers[name] || !cur.trackers[name]) continue;
-    sections.push(...tr.diff(prev.trackers[name], cur.trackers[name], { ...ctx, prevSavedAt: prev.savedAt }));
+    sections.push(...(await tr.diff(prev.trackers[name], cur.trackers[name], { ...ctx, prevSavedAt: prev.savedAt })));
   }
   return sections;
 }
@@ -76,6 +82,48 @@ function fmtTime(sec) {
   const d = new Date(sec * 1000);
   const p = (n) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+/** Per-repository work for one mode. Returns { label, sections?, history? } or null. */
+async function runRepo(mode, repo, env) {
+  const { root, workspace, sessionId, outT } = env;
+  const config = loadConfig(workspace ? [root, repo.top] : [repo.top]);
+  if (!config.enabled) return null;
+  const label = workspace ? path.relative(root, repo.top).split(path.sep).join('/') : null;
+  // git commands run from the repository top, whatever the session folder is.
+  const ctx = { cwd: repo.top, top: repo.top, gitDir: repo.gitDir, config, t: outT };
+  try {
+    if (mode === 'save') {
+      saveSnapshot(repo.gitDir, sessionId, await takeSnapshot(ctx));
+      return null;
+    }
+    if (mode === 'reset') {
+      resetSnapshots(repo.gitDir, await takeSnapshot(ctx));
+      return { label };
+    }
+    if (mode === 'show') {
+      const prev = loadSnapshot(repo.gitDir, null);
+      const sections = prev ? await diffSnapshots(prev, await takeSnapshot(ctx), ctx) : [];
+      return { label, sections, noBaseline: !prev, history: readHistory(repo.gitDir, 5) };
+    }
+    // diff
+    const prev = loadSnapshot(repo.gitDir, sessionId);
+    const cur = await takeSnapshot(ctx);
+    const sections = prev ? await diffSnapshots(prev, cur, ctx) : []; // first run / corrupt snapshot: just save
+    saveSnapshot(repo.gitDir, sessionId, cur); // so the same change is never reported twice
+    if (sections.length) {
+      try {
+        const text = render([{ label: null, sections }], config.limits, outT);
+        appendHistory(repo.gitDir, { at: cur.savedAt, session: sessionId, event: env.event, text });
+      } catch (e) {
+        logError(repo.gitDir, e);
+      }
+    }
+    return { label, sections };
+  } catch (e) {
+    logError(repo.gitDir, e);
+    return { label, error: e.message };
+  }
 }
 
 async function main() {
@@ -87,76 +135,66 @@ async function main() {
   }
   const isHook = mode === 'save' || mode === 'diff';
   const input = isHook ? await readStdin() : {};
-  const cwd = argValue(args, '--cwd') || input.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
-  const sessionId = input.session_id || null;
+  // Prefer the session's project folder: Claude Code's `cwd` follows `cd` in Bash.
+  const root = path.resolve(argValue(args, '--cwd') || process.env.CLAUDE_PROJECT_DIR || input.cwd || process.cwd());
 
-  const info = repoInfo(cwd);
-  if (!info) {
-    if (!isHook) out(makeT('en')('notRepo', { cwd }));
+  const rootCfg = loadConfig([root]);
+  const { workspace, repos } = await resolveRepos(root, rootCfg.workspace);
+  if (!repos.length) {
+    if (!isHook) out(makeT(rootCfg.language)('notRepo', { cwd: root }));
     return;
   }
-  const config = loadConfig(info.top);
-  const t = makeT(config.language);
-  if (!config.enabled) {
+  // Output-wide settings (language, notify, maxChars): the repo's own config, or the workspace's.
+  const outCfg = workspace ? rootCfg : loadConfig([repos[0].top]);
+  const t = makeT(outCfg.language);
+  if (!outCfg.enabled) {
     if (!isHook) out(t('disabled'));
     return;
   }
-  const ctx = { cwd, top: info.top, gitDir: info.gitDir, config, t };
 
-  try {
-    if (mode === 'save') {
-      saveSnapshot(info.gitDir, sessionId, takeSnapshot(ctx));
-      return;
-    }
+  const env = { root, workspace, sessionId: input.session_id || null, event: input.hook_event_name || null, outT: t };
+  const results = (await pool(repos, CONCURRENCY, (r) => runRepo(mode, r, env))).filter(Boolean);
+  const failed = results.filter((r) => r.error);
 
-    if (mode === 'reset') {
-      resetSnapshots(info.gitDir, takeSnapshot(ctx));
-      out(t('resetDone'));
-      return;
-    }
+  if (mode === 'save') return;
 
-    if (mode === 'show') {
-      const prev = loadSnapshot(info.gitDir, null);
-      const lines = [];
-      if (!prev) lines.push(t('noBaseline'));
-      else {
-        const sections = diffSnapshots(prev, takeSnapshot(ctx), ctx);
-        if (sections.length) lines.push(t('pendingTitle'), render(sections, config.limits, t));
-        else lines.push(t('pendingNone'));
-      }
-      lines.push('');
-      const hist = readHistory(info.gitDir, 5);
-      if (!hist.length) lines.push(t('historyNone'));
-      else {
-        lines.push(t('historyTitle'));
-        for (const h of hist) lines.push('', `[${fmtTime(h.at)}]${h.session ? ` session ${String(h.session).slice(0, 8)}` : ''}`, h.text);
-      }
-      out(lines.join('\n'));
-      return;
-    }
-
-    // mode === 'diff'
-    const prev = loadSnapshot(info.gitDir, sessionId);
-    const cur = takeSnapshot(ctx);
-    const sections = prev ? diffSnapshots(prev, cur, ctx) : []; // first run / corrupt snapshot: just save
-    saveSnapshot(info.gitDir, sessionId, cur); // so the same change is never reported twice
-    if (!sections.length) return;
-
-    const text = render(sections, config.limits, t);
-    const payload = {
-      hookSpecificOutput: { hookEventName: input.hook_event_name || 'UserPromptSubmit', additionalContext: text },
-    };
-    if (config.notify) payload.systemMessage = summarize(sections, t);
-    out(JSON.stringify(payload));
-    try {
-      appendHistory(info.gitDir, { at: cur.savedAt, session: sessionId, event: input.hook_event_name || null, text });
-    } catch (e) {
-      logError(info.gitDir, e);
-    }
-  } catch (e) {
-    logError(info.gitDir, e);
-    if (!isHook) out(`offscreen: error: ${e.message}`);
+  if (mode === 'reset') {
+    out(t('resetDone') + (workspace ? ` (${results.length - failed.length})` : ''));
+    for (const f of failed) out(`offscreen: error${f.label ? ` [${f.label}]` : ''}: ${f.error}`);
+    return;
   }
+
+  const groups = results.filter((r) => r.sections && r.sections.length);
+
+  if (mode === 'show') {
+    const lines = [];
+    if (groups.length) lines.push(t('pendingTitle'), render(groups, outCfg.limits, t));
+    else lines.push(results.some((r) => r.noBaseline) ? t('noBaseline') : t('pendingNone'));
+    for (const f of failed) lines.push(`offscreen: error${f.label ? ` [${f.label}]` : ''}: ${f.error}`);
+    lines.push('');
+    const hist = results
+      .flatMap((r) => (r.history || []).map((h) => ({ ...h, label: r.label })))
+      .sort((a, b) => b.at - a.at)
+      .slice(0, 5);
+    if (!hist.length) lines.push(t('historyNone'));
+    else {
+      lines.push(t('historyTitle'));
+      for (const h of hist) {
+        const who = [h.label, h.session ? `session ${String(h.session).slice(0, 8)}` : null].filter(Boolean).join(' · ');
+        lines.push('', `[${fmtTime(h.at)}]${who ? ` ${who}` : ''}`, h.text);
+      }
+    }
+    out(lines.join('\n'));
+    return;
+  }
+
+  // diff
+  if (!groups.length) return;
+  const payload = {
+    hookSpecificOutput: { hookEventName: env.event || 'UserPromptSubmit', additionalContext: render(groups, outCfg.limits, t) },
+  };
+  if (outCfg.notify) payload.systemMessage = summarize(groups, t);
+  out(JSON.stringify(payload));
 }
 
 main()

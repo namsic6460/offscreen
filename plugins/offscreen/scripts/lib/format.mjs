@@ -5,6 +5,7 @@ const STRINGS = {
     intro:
       'The repository changed outside this conversation since your last response (manual work by the user, an IDE, or another agent session).\n' +
       'Treat this as the current state; do not assume the earlier state. Run git commands yourself if you need details.',
+    repo: 'Repository: {name}',
     reflog: 'HEAD movements (reflog, newest first)',
     branch: 'Branch',
     detached: '(detached at {h})',
@@ -45,12 +46,13 @@ const STRINGS = {
     historyNone: 'Nothing has been reported yet.',
     resetDone: 'offscreen: baseline reset to the current repository state.',
     disabled: 'offscreen is disabled by config (enabled: false).',
-    notRepo: 'offscreen: not a git repository: {cwd}',
+    notRepo: 'offscreen: no git repository at or below: {cwd}',
   },
   ko: {
     intro:
       '마지막 응답 이후 이 대화 밖에서(사용자 수동 작업, IDE, 다른 에이전트 세션 등) 저장소가 변경되었습니다.\n' +
       '아래를 현재 상태로 간주하고 이전 상태를 가정하지 마세요. 자세한 내용이 필요하면 git 명령으로 직접 확인하세요.',
+    repo: '저장소: {name}',
     reflog: 'HEAD 이동 기록 (reflog, 최신순)',
     branch: '브랜치',
     detached: '(detached: {h})',
@@ -91,7 +93,7 @@ const STRINGS = {
     historyNone: '아직 전달한 내역이 없습니다.',
     resetDone: 'offscreen: 기준 스냅샷을 현재 저장소 상태로 초기화했습니다.',
     disabled: 'offscreen이 설정에서 꺼져 있습니다 (enabled: false).',
-    notRepo: 'offscreen: git 저장소가 아닙니다: {cwd}',
+    notRepo: 'offscreen: 이 폴더와 하위에 git 저장소가 없습니다: {cwd}',
   },
 };
 
@@ -110,15 +112,17 @@ export function capList(items, max, t) {
 }
 
 /**
- * sections: [{ title, lines: string[], summary?: string }]
+ * groups: [{ label: string|null, sections: [{ title, lines: string[], summary?: string }] }]
+ * label is the repository path in workspace mode (null for a single repository).
  * Returns the full <offscreen> block, truncated to maxChars.
  */
-export function render(sections, { maxChars }, t) {
+export function render(groups, { maxChars }, t) {
   const open = '<offscreen>';
   const close = '</offscreen>';
   const body = [t('intro')];
-  for (const s of sections) {
-    body.push('', `## ${s.title}`, ...s.lines);
+  for (const g of groups) {
+    if (g.label != null) body.push('', `# ${t('repo', { name: g.label })}`);
+    for (const s of g.sections) body.push('', `## ${s.title}`, ...s.lines);
   }
   let text = body.join('\n');
   const full = `${open}\n${text}\n${close}`;
@@ -131,7 +135,10 @@ export function render(sections, { maxChars }, t) {
   return `${open}\n${text}\n${note}\n${close}`;
 }
 
-export function summarize(sections, t) {
-  const parts = sections.map((s) => s.summary).filter(Boolean);
-  return t('notify', { parts: [...new Set(parts)].join(', ') });
+export function summarize(groups, t) {
+  const parts = groups.map((g) => {
+    const p = [...new Set(g.sections.map((s) => s.summary).filter(Boolean))].join(', ');
+    return g.label != null ? `${g.label}: ${p}` : p;
+  });
+  return t('notify', { parts: parts.join('; ') });
 }
