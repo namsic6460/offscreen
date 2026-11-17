@@ -31,8 +31,8 @@ function readStdin(timeoutMs = 3000) {
       if (done) return;
       done = true;
       clearTimeout(timer);
-      process.stdin.pause();
-      process.stdin.unref?.();
+      // A host that never closes stdin must not keep this process alive past the hook timeout.
+      process.stdin.destroy();
       try {
         resolve(data.trim() ? JSON.parse(data) : {});
       } catch {
@@ -41,7 +41,14 @@ function readStdin(timeoutMs = 3000) {
     };
     const timer = setTimeout(finish, timeoutMs);
     process.stdin.setEncoding('utf8');
-    process.stdin.on('data', (c) => (data += c));
+    process.stdin.on('data', (c) => {
+      data += c;
+      // Hosts may keep stdin open after writing the event; go as soon as it is complete JSON.
+      try {
+        JSON.parse(data);
+        finish();
+      } catch {}
+    });
     process.stdin.on('end', finish);
     process.stdin.on('error', finish);
   });
@@ -197,8 +204,12 @@ async function main() {
   out(JSON.stringify(payload));
 }
 
+// Hooks time out at 10s; never get killed (that shows up as a failed hook).
+setTimeout(() => process.exit(0), 9000).unref();
+
 main()
   .catch(() => {})
   .finally(() => {
-    process.exitCode = 0;
+    // stdout was written synchronously, so exiting right away loses nothing.
+    process.exit(0);
   });

@@ -278,15 +278,18 @@ test('23. git error never blocks: exit 0 and error.log', () => {
   assert.match(fs.readFileSync(path.join(r.gitDir, 'offscreen', 'error.log'), 'utf8'), /git status/);
 });
 
-test('24. Codex hook command works through the platform shell', () => {
+test('24. Codex uses the shared hooks.json; its command works once the root is substituted', () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, '.codex-plugin', 'plugin.json'), 'utf8'));
+  assert.equal(manifest.hooks, undefined, 'Codex must fall back to hooks/hooks.json');
+  assert.ok(new RegExp(JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'hooks', 'hooks.json'), 'utf8')).hooks.PostToolUse[0].matcher).test('apply_patch'));
   const r = baseRepo();
   r.commit('b.txt', 'b\n', 'via codex');
-  const cfg = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'hooks', 'codex.json'), 'utf8'));
-  const command = cfg.hooks.UserPromptSubmit[0].hooks[0].command;
+  const cfg = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'hooks', 'hooks.json'), 'utf8'));
+  const command = cfg.hooks.UserPromptSubmit[0].hooks[0].command.replace('${CLAUDE_PLUGIN_ROOT}', PLUGIN_ROOT);
   const res = spawnSync(command, {
     shell: true,
     cwd: r.dir,
-    env: { ...ENV, PLUGIN_ROOT, CLAUDE_PLUGIN_ROOT: '' },
+    env: ENV,
     input: JSON.stringify({ cwd: r.dir, session_id: 'codex-1', hook_event_name: 'UserPromptSubmit', model: 'gpt-5' }),
     encoding: 'utf8',
   });

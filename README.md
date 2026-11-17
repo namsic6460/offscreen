@@ -1,14 +1,15 @@
 # offscreen
 
-AI가 응답하지 않는 사이(= AI가 보지 못한 사이)에 저장소가 바뀌면, **다음 프롬프트에 바뀐 부분만** 컨텍스트로 붙여 주는 Claude Code / Codex 플러그인.
+AI가 보지 못한 사이에 저장소가 바뀌면, **다음 프롬프트에 바뀐 부분만** 알려 주는 Claude Code / Codex 플러그인.
 
-터미널에서 직접 커밋·체크아웃·reset·rebase·stash를 하거나 IDE에서 파일을 고친 뒤 AI에게 따로 말하지 않으면, AI는 예전 상태를 가정하고 답하기 쉽습니다. offscreen은 그 변경을 기록해 두었다가 다음 프롬프트 제출 시점에 한 번만 전달합니다.
+터미널에서 직접 커밋·브랜치 전환·reset·rebase·stash를 하거나 IDE에서 파일을 고친 뒤 AI에게 따로 말하지 않으면, AI는 예전 상태를 가정하고 답하기 쉽습니다. offscreen은 그런 변경을 기록해 두었다가 다음 프롬프트를 보낼 때 한 번만 전달합니다.
 
-- 변경이 없으면 아무것도 주입하지 않습니다 (토큰 0).
-- 상태가 바뀔 때마다 AI를 호출하지 않습니다. 감지는 프롬프트 제출 시점에 로컬 스크립트로만 합니다.
-- 새 채팅에서도 이어집니다. 기준 스냅샷이 저장소의 `.git/offscreen/` 안에 남습니다.
-- 다른 세션(다른 Claude/Codex 창)이 바꾼 내용도 "이 대화 밖의 변경"으로 알려 줍니다.
-- 프롬프트를 절대 막지 않습니다. 오류가 나도 exit 0, 기록은 `.git/offscreen/error.log`.
+- 바뀐 게 없으면 아무것도 붙이지 않습니다 (토큰 0).
+- 변경이 생길 때마다 AI를 호출하지 않습니다. 확인은 프롬프트를 보낼 때 로컬에서만 합니다.
+- 새 채팅을 열어도 이어집니다. 이전 채팅 이후의 변경을 알려 줍니다.
+- 다른 Claude/Codex 창에서 바뀐 내용도 "이 대화 밖의 변경"으로 알려 줍니다.
+- 저장소들을 모아 둔 상위 폴더에서 세션을 열면 하위 저장소들을 함께 감시합니다.
+- 프롬프트를 막지 않습니다. 문제가 생겨도 조용히 건너뜁니다.
 
 ## AI가 받는 내용 (예)
 
@@ -39,11 +40,11 @@ edited further: README.md
 </offscreen>
 ```
 
-터미널에는 `offscreen: changes made outside this chat were sent to the AI (commits 2, files 4, ...)` 한 줄 알림이 뜹니다 (`notify: false`로 끔).
+이때 터미널에는 `offscreen: changes made outside this chat were sent to the AI (commits 2, files 4, ...)` 한 줄 알림이 뜹니다.
 
 ## 설치
 
-이 저장소 자체가 Claude Code / Codex 마켓플레이스입니다.
+필요 조건: `node`(18 이상)와 `git`이 PATH에 있어야 합니다.
 
 **Claude Code**
 
@@ -51,8 +52,6 @@ edited further: README.md
 /plugin marketplace add namsic6460/offscreen
 /plugin install offscreen@offscreen
 ```
-
-로컬 경로로도 됩니다: `/plugin marketplace add ./offscreen` (개발 중엔 `claude --plugin-dir ./plugins/offscreen`).
 
 **Codex**
 
@@ -64,120 +63,113 @@ codex plugin marketplace add namsic6460/offscreen
 codex plugin add offscreen@offscreen
 ```
 
-그다음 `codex`에서 `/hooks`를 열어 offscreen 훅 3개(UserPromptSubmit·PostToolUse·Stop, `hooks/codex.json`)를 신뢰(trust)해야 실행됩니다. Codex는 플러그인을 `~/.codex/plugins/cache/`에 복사해 쓰므로, 소스를 고친 뒤에는 `codex plugin add`로 다시 설치하고 바뀐 훅을 다시 신뢰해야 합니다.
+Codex는 플러그인 훅을 사용자가 승인해야 실행합니다. `codex`를 열고 `/hooks`에서 offscreen 훅 3개를 신뢰(trust)하세요.
 
-필요 조건: `node`(18+)와 `git`이 PATH에 있을 것. 외부 의존성은 없습니다.
+## 업데이트
 
-## 동작 원리
+**Claude Code** — 실행한 뒤 Claude Code를 다시 시작하세요.
 
-```
-[AI 턴]   PostToolUse (Bash/PowerShell/Edit/Write/apply_patch/mcp__*) → save (백그라운드)   AI 자신의 변경은 기준선에 흡수
-          Stop                                                           → save
-[사용자 수동 작업 — 아무것도 실행되지 않음]
-[프롬프트 제출]  UserPromptSubmit → diff → 변경이 있으면 additionalContext로 주입 → 즉시 save
+```bash
+claude plugin marketplace update offscreen
 ```
 
-### 감시 대상: 세션 폴더
+```bash
+claude plugin update offscreen@offscreen
+```
 
-- 세션 폴더(Claude Code는 `CLAUDE_PROJECT_DIR`, Codex는 세션 `cwd`)가 **git 저장소 안**이면 그 저장소 하나를 감시합니다.
-- 세션 폴더가 **저장소가 아니면**(여러 저장소를 모아 둔 상위 폴더 등) 하위 `workspace.scanDepth`(기본 2) 단계까지 저장소를 찾아 모두 감시합니다. 저장소 안으로는 더 들어가지 않고, 숨김 폴더·`node_modules`·`build`·`dist` 등은 건너뜁니다. 최대 `workspace.maxRepos`(기본 30)개, 병렬로 검사합니다.
-- 여러 저장소일 때는 저장소별로 `# Repository: api` 제목을 붙여 한 블록으로 전달합니다. 처음 발견된 저장소는 기준선만 저장하고 다음부터 보고합니다.
-- PostToolUse 저장은 백그라운드로 돌아 AI 작업을 막지 않고, 늦게 끝난 오래된 저장이 더 최신 기준선을 덮어쓰지 않습니다.
+**Codex**
 
-- 스냅샷: `$(git rev-parse --git-dir)/offscreen/` — 커밋에 섞이지 않고, 저장소·worktree별로 분리됩니다.
-  - `sessions/<session_id>.json` — 세션별 기준선 (7일 지나면 정리)
-  - `snapshot.json` — 마지막으로 저장된 기준선. 새 세션은 여기서 시작합니다.
-  - `history.jsonl` — AI에게 전달한 내역 (최근 50개 유지)
-- 추적 항목 (git tracker): HEAD, 현재 브랜치, 로컬 브랜치 목록, stash, 작업 트리(`git status --porcelain=v2`), dirty 파일의 내용 해시(이미 M인 파일의 추가 수정 감지), 진행 중 작업(rebase/merge/cherry-pick/revert/bisect/am)과 충돌 파일.
-- reflog는 저장 시점의 최상단 항목을 마커로 기억해 그 이후 항목만 보여 줍니다.
-- 원격 조회(fetch, gh API)는 하지 않습니다. 전체 diff도 넣지 않습니다 — 요약만 주고, 상세는 AI가 필요하면 직접 조회합니다.
-- `git status`는 `GIT_OPTIONAL_LOCKS=0`으로 실행해 사용자의 git 작업과 index.lock을 다투지 않습니다.
+```bash
+codex plugin marketplace upgrade offscreen
+```
 
-## 스킬 (수동 명령)
+```bash
+codex plugin add offscreen@offscreen
+```
+
+업데이트하면 Codex가 훅을 다시 승인받으려 합니다. `/hooks`에서 offscreen 훅을 다시 신뢰하세요. 승인할 항목이 보이지 않는데 훅이 동작하지 않으면, 실행 중인 Codex(데스크톱 앱 포함)를 모두 종료한 뒤 다시 열고 `/hooks`를 확인하세요.
+
+## 무엇을 알려 주나
+
+AI가 마지막으로 작업을 마친 시점과 비교해, 그 사이에 생긴 변경을 알려 줍니다. AI 자신이 한 변경은 제외됩니다.
+
+| 항목 | 내용 |
+|---|---|
+| HEAD 이동 기록 | commit, checkout/switch, reset, rebase, merge, pull, cherry-pick, amend 등 |
+| 커밋 변화 | 새 커밋 / 되돌린 커밋(reset) / 히스토리 재작성(rebase·amend)과 해당 커밋 목록 |
+| 브랜치 | 현재 브랜치 전환, detached HEAD, 로컬 브랜치 생성·삭제·이동 |
+| 작업 트리 | 새로 바뀐 파일, 커밋·되돌림으로 깨끗해진 파일, stage 상태 변화, 이미 수정된 파일의 추가 수정 |
+| stash | push, pop·drop |
+| 진행 중 작업 | rebase/merge/cherry-pick/revert/bisect 시작·종료, 충돌 파일 |
+
+알려 주지 않는 것:
+
+- 원격 상태 (`fetch`만 한 경우, `origin/*` 브랜치). 원격 서버에는 접속하지 않습니다.
+- 태그, git 설정, `.gitignore`에 걸린 파일, submodule 내부
+- 파일 내용 자체 (어떤 파일이 바뀌었는지만 알려 주고, 자세한 내용은 AI가 필요하면 직접 확인합니다)
+
+### 어떤 저장소를 감시하나
+
+- 세션을 연 폴더가 git 저장소 안이면 그 저장소를 감시합니다.
+- 저장소가 아닌 폴더(여러 저장소를 모아 둔 폴더 등)에서 세션을 열면, 2단계 아래까지 저장소를 찾아 최대 30개를 함께 감시합니다. 숨김 폴더와 `node_modules`·`build`·`dist` 등은 건너뜁니다. 이때는 저장소마다 `# Repository: <이름>` 제목이 붙습니다.
+- 처음 보는 저장소는 그 시점 상태를 기준으로 삼고, 다음부터 변경을 알려 줍니다.
+
+### 기록 위치
+
+각 저장소의 `.git/offscreen/` 폴더에 저장되므로 커밋에 섞이지 않습니다. 이 폴더를 지우면 기록이 초기화됩니다.
+
+## 명령
 
 | Claude Code | Codex | 동작 |
 |---|---|---|
-| `/offscreen:offscreen-show` | 스킬 `offscreen-show` | 아직 전달 안 된 변경 미리보기(저장 안 함) + 최근 전달 내역 |
-| `/offscreen:offscreen-reset` | 스킬 `offscreen-reset` | 기준선을 현재 상태로 초기화 (모든 세션) |
-
-직접 실행해도 됩니다: `node <plugin>/scripts/offscreen.mjs show --cwd <repo>`.
+| `/offscreen:offscreen-show` | 스킬 `offscreen-show` | 아직 전달되지 않은 변경 미리보기 + 최근에 AI에 전달한 내역 |
+| `/offscreen:offscreen-reset` | 스킬 `offscreen-reset` | 지금 상태를 새 기준으로 삼기 (지금까지의 변경은 전달하지 않음) |
 
 ## 설정
 
-우선순위: `<repo>/.claude/offscreen.json` 또는 `<repo>/.codex/offscreen.json` > (상위 폴더 세션일 때) `<세션 폴더>/.claude/offscreen.json` > `~/.claude/offscreen.json` 또는 `~/.codex/offscreen.json` > 기본값
+설정 파일은 필요할 때만 만들면 됩니다. 아래 위치 중 앞쪽이 우선합니다.
 
-상위 폴더 세션에서 `language`·`notify`·`maxChars`·`workspace`는 세션 폴더 쪽 설정을 쓰고, 나머지는 저장소별 설정이 우선합니다(예: 특정 저장소만 `"enabled": false`).
+1. 저장소의 `.claude/offscreen.json` 또는 `.codex/offscreen.json`
+2. (상위 폴더에서 세션을 열었을 때) 그 폴더의 `.claude/offscreen.json`
+3. 홈의 `~/.claude/offscreen.json` 또는 `~/.codex/offscreen.json`
+
+기본값:
 
 ```json
 {
   "enabled": true,
   "language": "en",
   "notify": true,
-  "trackers": ["git"],
   "untracked": "all",
+  "ignore": [],
   "limits": { "maxReflog": 15, "maxCommits": 10, "maxFiles": 30, "maxHashFiles": 500, "maxHashBytes": 8388608, "maxChars": 4000 },
-  "ignore": ["dist/**", "*.log"],
   "workspace": { "scanDepth": 2, "maxRepos": 30 }
 }
 ```
 
 | 키 | 설명 |
 |---|---|
-| `language` | `"en"` 또는 `"ko"` — 주입 텍스트·알림 언어 |
+| `enabled` | `false`면 끕니다. 특정 저장소에서만 끌 때 그 저장소 설정에 넣으세요. |
+| `language` | `"en"` 또는 `"ko"` — AI에 전달하는 문구와 알림의 언어 |
 | `notify` | 터미널 한 줄 알림 표시 여부 |
-| `untracked` | `git status --untracked-files` 값. `all`은 새 디렉터리 안 파일까지 개별 감지, 큰 미추적 트리가 있으면 `normal` 권장 |
-| `limits.maxHashFiles` | dirty 파일이 이보다 많으면 내용 해시를 생략 (status 변화만 비교) |
-| `limits.maxHashBytes` | 이보다 큰 파일은 내용 대신 크기+mtime으로 비교 |
-| `limits.maxChars` | 주입 텍스트 최대 길이. 넘으면 뒤를 자르고 `(truncated …)` 표시 |
-| `ignore` | 보고에서 제외할 경로 glob. `*`, `**`, `?` 지원. `/` 없는 패턴(`*.log`, `node_modules`)은 어느 깊이에서든 일치, `/`로 시작하면 저장소 루트 기준 |
-| `workspace.scanDepth` | 세션 폴더가 저장소가 아닐 때 하위 저장소를 찾을 깊이. `0`이면 상위 폴더 세션에서는 동작 안 함 |
-| `workspace.maxRepos` | 상위 폴더 세션에서 감시할 최대 저장소 수 |
+| `untracked` | 새 파일 감지 방식. `all`은 새 폴더 안 파일까지 하나하나, `normal`은 폴더 단위. 큰 미추적 폴더가 있으면 `normal` 권장 |
+| `ignore` | 보고에서 뺄 경로 패턴. 예: `["dist/**", "*.log"]`. `/`가 없는 패턴은 어느 깊이에서든 일치하고, `/`로 시작하면 저장소 최상위 기준 |
+| `limits.maxReflog` / `maxCommits` / `maxFiles` | 항목별로 보여 줄 최대 개수. 넘으면 `…and N more` |
+| `limits.maxHashFiles` | 수정된 파일이 이보다 많으면 "추가 수정" 감지를 생략 |
+| `limits.maxHashBytes` | 이보다 큰 파일은 내용 대신 크기·수정 시각으로 비교 |
+| `limits.maxChars` | AI에 전달하는 글자 수 상한. 넘으면 뒤를 자릅니다 |
+| `workspace.scanDepth` | 상위 폴더에서 저장소를 찾을 깊이. `0`이면 상위 폴더 세션에서는 동작하지 않음 |
+| `workspace.maxRepos` | 상위 폴더에서 감시할 최대 저장소 수 |
 
-## 한계
+상위 폴더에서 세션을 열었을 때 `language`·`notify`·`limits.maxChars`·`workspace`는 그 폴더의 설정을 따르고, 나머지는 저장소별 설정이 우선합니다.
 
-- **AI 턴 도중의 수동 변경**: AI가 도구를 실행한 직후마다 기준선을 저장하므로, AI가 작업하는 동안 사용자가 동시에 바꾼 내용은 흡수되어 보고되지 않을 수 있습니다.
-- **백그라운드 명령**: AI가 백그라운드로 띄운 명령이 턴이 끝난 뒤 저장소를 바꾸면 다음 턴에 "대화 밖 변경"으로 보고됩니다.
-- **세션 간 공유**: 같은 저장소의 다른 세션이 바꾼 내용도 보고됩니다(의도된 동작). 표현이 "user or another agent session"인 이유입니다.
-- **submodule**: 상위 저장소의 status에 보이는 범위만 추적합니다.
-- **대형 저장소**: `git status`가 8초를 넘으면 그 턴은 건너뛰고 `error.log`에 남깁니다.
-- **상위 폴더 세션의 지연**: 저장소 14개 기준 프롬프트 제출 시 약 1.5초가 더해집니다(Windows 실측). 큰 저장소는 `untracked: "normal"`이나 `ignore`로 줄일 수 있습니다.
-- **세션 폴더 밖 저장소**: AI가 세션 폴더 밖의 저장소를 고치면 그 변경은 기준선에 흡수되지 않습니다.
-- **Codex**: 훅은 `/hooks`에서 신뢰해야 동작합니다. Codex CLI 0.167(Windows)과 Claude Code 2.1.325(Windows)에서 실세션으로 검증했습니다.
+## 알아 둘 점
 
-## 확장 (tracker)
-
-`plugins/offscreen/scripts/trackers/<name>.mjs`에 아래 형태의 모듈을 추가하고 `scripts/offscreen.mjs`의 `TRACKERS`에 등록한 뒤 설정 `trackers`에 이름을 넣습니다.
-
-```js
-export default {
-  name: 'docker',
-  async snapshot(ctx) { /* 직렬화 가능한 현재 상태, 해당 없으면 null */ },  // ctx = { cwd, top, gitDir, config, t }
-  async diff(prev, cur, ctx) { return [{ title: 'Containers', lines: ['+ web (up)'], summary: 'docker' }]; },
-};
-```
-
-## 개발
-
-```bash
-npm test                         # node:test, 임시 git 저장소에서 실제 git 명령으로 검증
-claude plugin validate .         # 마켓플레이스·플러그인 매니페스트 검증
-```
-
-```
-.claude-plugin/marketplace.json     Claude Code 마켓플레이스
-.agents/plugins/marketplace.json    Codex 마켓플레이스
-plugins/offscreen/
-  .claude-plugin/plugin.json        Claude Code 매니페스트 (hooks/hooks.json 사용)
-  .codex-plugin/plugin.json         Codex 매니페스트 (hooks/codex.json 사용)
-  hooks/hooks.json, hooks/codex.json
-  skills/offscreen-show, skills/offscreen-reset
-  scripts/offscreen.mjs             진입점: save | diff | show | reset
-  scripts/lib/{git,store,config,format,glob,workspace}.mjs
-  scripts/trackers/git.mjs
-test/
-```
-
-Codex 훅 명령은 Windows에서 어떤 셸(cmd/PowerShell/sh)로 실행돼도 동작하도록 `node -e "import(...PLUGIN_ROOT...)"` 형태로 되어 있습니다.
+- **AI가 작업하는 도중에 바꾼 내용**: AI가 도구를 실행할 때마다 기준을 새로 잡기 때문에, AI 작업 중에 동시에 바꾼 내용은 알려 주지 못할 수 있습니다.
+- **AI가 띄운 백그라운드 작업**: AI가 백그라운드로 실행한 명령이 응답이 끝난 뒤 저장소를 바꾸면, 다음 프롬프트에 "대화 밖 변경"으로 보고됩니다.
+- **세션 폴더 밖의 저장소**: AI가 세션 폴더 밖에 있는 저장소를 고치면, 그 변경이 나중에 "대화 밖 변경"으로 보고될 수 있습니다.
+- **속도**: 저장소 하나는 프롬프트마다 0.2초 안팎, 상위 폴더에서 저장소 14개를 감시하면 약 1.5초가 더해집니다(Windows 기준). 큰 저장소는 `untracked: "normal"`이나 `ignore`로 줄일 수 있습니다. `git status`가 8초 넘게 걸리면 그 차례는 건너뜁니다.
+- **문제 확인**: 오류는 각 저장소의 `.git/offscreen/error.log`에 남습니다.
 
 ## License
 

@@ -1,9 +1,8 @@
 {
   "name": "offscreen",
-  "version": "0.2.0",
+  "version": "0.2.2",
   "description": "Tells the AI what changed in your repo between its responses (manual git work, IDE edits, other sessions) — only the diff, only when something changed.",
   "license": "Unlicense",
   "keywords": ["git", "context", "hooks"],
-  "skills": "./skills/",
-  "hooks": "./hooks/codex.json"
+  "skills": "./skills/"
 }

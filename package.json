@@ -1,6 +1,6 @@
 {
   "name": "offscreen",
-  "version": "0.2.0",
+  "version": "0.2.2",
   "private": true,
   "description": "Claude Code / Codex plugin: tell the AI what changed in the repo between its responses.",
   "license": "Unlicense",
