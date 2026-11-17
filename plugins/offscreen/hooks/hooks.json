@@ -1,0 +1,27 @@
+{
+  "description": "offscreen: tell the AI what changed in the repo outside the conversation",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/offscreen.mjs\" diff", "timeout": 10 }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^(Bash|PowerShell|Edit|Write|MultiEdit|NotebookEdit|mcp__.*)$",
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/offscreen.mjs\" save", "timeout": 10 }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/offscreen.mjs\" save", "timeout": 10 }
+        ]
+      }
+    ]
+  }
+}

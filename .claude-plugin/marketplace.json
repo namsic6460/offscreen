@@ -1,0 +1,14 @@
+{
+  "name": "offscreen",
+  "description": "offscreen — tell the AI what you changed in the repo between its responses",
+  "owner": {
+    "name": "namsic6460"
+  },
+  "plugins": [
+    {
+      "name": "offscreen",
+      "source": "./plugins/offscreen",
+      "description": "Reports repository changes made outside the conversation (manual git work, IDE edits, other sessions) on your next prompt — only the diff, only when something changed."
+    }
+  ]
+}
