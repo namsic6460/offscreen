@@ -167,4 +167,4 @@ Codex 훅 명령은 Windows에서 어떤 셸(cmd/PowerShell/sh)로 실행돼도 
 
 ## License
 
-MIT
+[Unlicense](LICENSE) — 퍼블릭 도메인. 출처 표기 없이 자유롭게 사용·수정·배포할 수 있습니다.
