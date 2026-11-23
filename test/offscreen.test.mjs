@@ -304,6 +304,6 @@ test('25. Claude hook config parses and points at the script', () => {
   }
   assert.equal(cfg.hooks.PostToolUse[0].hooks[0].async, true);
   const re = new RegExp(cfg.hooks.PostToolUse[0].matcher);
-  for (const tool of ['Bash', 'PowerShell', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'mcp__idea__apply_patch']) assert.ok(re.test(tool), tool);
-  for (const tool of ['Read', 'Grep', 'Glob', 'TodoWrite']) assert.ok(!re.test(tool), tool);
+  for (const tool of ['Bash', 'PowerShell', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Read', 'Grep', 'Glob', 'mcp__idea__apply_patch']) assert.ok(re.test(tool), tool);
+  for (const tool of ['TodoWrite', 'WebFetch', 'Task']) assert.ok(!re.test(tool), tool);
 });

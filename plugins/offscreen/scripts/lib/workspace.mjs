@@ -1,16 +1,21 @@
-// Workspace mode: when the session folder is not itself inside a git repository
-// (e.g. a folder that holds many repositories), find the repositories below it.
+// Which repositories to watch for a session folder.
+//
+//   single - the folder is inside a git repository: watch that one
+//   all    - the folder holds up to workspace.maxRepos repositories: watch all of them
+//   active - it holds more: watch only the ones the AI read or changed recently (see active.mjs)
 import fs from 'node:fs';
 import path from 'node:path';
 import { repoInfo } from './git.mjs';
+import { recentRepos } from './active.mjs';
 
 const SKIP = new Set(['node_modules', 'vendor', 'target', 'build', 'dist', 'out', 'bin', 'obj', '__pycache__', 'venv']);
+const SCAN_LIMIT = 2000;
 
 /** Directories under root (depth 1..maxDepth) that contain a `.git` entry. Does not descend into repos. */
-export function findRepoDirs(root, maxDepth, maxRepos) {
+export function findRepoDirs(root, maxDepth, limit = SCAN_LIMIT) {
   const found = [];
   let queue = [root];
-  for (let depth = 1; depth <= maxDepth && queue.length && found.length < maxRepos; depth++) {
+  for (let depth = 1; depth <= maxDepth && queue.length && found.length < limit; depth++) {
     const next = [];
     for (const dir of queue) {
       let entries;
@@ -25,37 +30,50 @@ export function findRepoDirs(root, maxDepth, maxRepos) {
         const child = path.join(dir, e.name);
         if (fs.existsSync(path.join(child, '.git'))) {
           found.push(child);
-          if (found.length >= maxRepos) break;
+          if (found.length >= limit) break;
         } else if (!SKIP.has(e.name)) {
           next.push(child);
         }
       }
-      if (found.length >= maxRepos) break;
+      if (found.length >= limit) break;
     }
     queue = next;
   }
   return found;
 }
 
-/**
- * Repositories to watch for `root`.
- * - root inside a repo -> [that repo], workspace = false
- * - otherwise          -> repos found below root, workspace = true
- */
-export async function resolveRepos(root, { scanDepth, maxRepos }) {
-  const own = await repoInfo(root);
-  if (own) return { workspace: false, repos: [own] };
-  if (scanDepth <= 0) return { workspace: true, repos: [] };
-  const dirs = findRepoDirs(root, scanDepth, maxRepos);
-  const infos = await Promise.all(dirs.map((d) => repoInfo(d)));
+/** Repo paths for a known top. Skips a git call when `.git` is a plain directory. */
+export async function infoFor(top) {
+  try {
+    if (fs.statSync(path.join(top, '.git')).isDirectory()) return { gitDir: path.join(top, '.git'), top };
+  } catch {
+    return null;
+  }
+  const info = await repoInfo(top);
+  return info ? { gitDir: path.resolve(info.gitDir), top: path.resolve(info.top) } : null;
+}
+
+async function infos(tops) {
   const seen = new Set();
-  const repos = [];
-  for (const info of infos) {
+  const out = [];
+  for (const info of await Promise.all(tops.map(infoFor))) {
     if (!info || seen.has(info.gitDir)) continue;
     seen.add(info.gitDir);
-    repos.push(info);
+    out.push(info);
   }
-  return { workspace: true, repos };
+  return out;
+}
+
+/** Decide the mode for `root` and return the repositories to watch. */
+export async function resolveRepos(root, ws) {
+  const own = await repoInfo(root);
+  if (own) return { mode: 'single', repos: [{ gitDir: path.resolve(own.gitDir), top: path.resolve(own.top) }] };
+  if (ws.scanDepth <= 0) return { mode: 'all', repos: [] };
+  const dirs = ws.mode === 'active' ? [] : findRepoDirs(root, ws.scanDepth);
+  if (ws.mode === 'all' || (ws.mode !== 'active' && dirs.length <= ws.maxRepos)) {
+    return { mode: 'all', repos: await infos(dirs.slice(0, ws.maxRepos)) };
+  }
+  return { mode: 'active', repos: await infos(recentRepos(root, ws)) };
 }
 
 /** Run fn over items with at most `limit` in flight. */

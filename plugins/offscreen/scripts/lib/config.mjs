@@ -12,7 +12,8 @@ export const DEFAULTS = Object.freeze({
   limits: { maxReflog: 15, maxCommits: 10, maxFiles: 30, maxHashFiles: 500, maxHashBytes: 8 * 1024 * 1024, maxChars: 4000 },
   ignore: [],
   // Session folder that is not a repo itself: watch the repositories below it.
-  workspace: { scanDepth: 2, maxRepos: 30 },
+  // mode: auto = all of them up to maxRepos, otherwise only recently used ones (active).
+  workspace: { mode: 'auto', scanDepth: 2, maxRepos: 30, recentDays: 7 },
 });
 
 function readFirst(files) {
@@ -53,5 +54,6 @@ export function loadConfig(dirs, home = process.env.OFFSCREEN_HOME || os.homedir
     cfg = merge(cfg, readFirst(filesIn(d)));
   }
   if (!['all', 'normal', 'no'].includes(cfg.untracked)) cfg.untracked = DEFAULTS.untracked;
+  if (!['auto', 'all', 'active'].includes(cfg.workspace.mode)) cfg.workspace = { ...cfg.workspace, mode: 'auto' };
   return cfg;
 }

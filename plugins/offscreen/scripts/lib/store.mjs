@@ -71,6 +71,10 @@ export function loadSnapshot(gitDir, sessionId) {
   return valid(l) ? l : null;
 }
 
+export function hasSessionSnapshot(gitDir, sessionId) {
+  return valid(readJson(sessionFile(gitDir, sessionId)));
+}
+
 /**
  * Save unless a snapshot taken *later* is already there. PostToolUse saves run in the
  * background, so an older save can finish after a newer one; it must not win.

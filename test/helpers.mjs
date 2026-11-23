@@ -47,9 +47,10 @@ export function tmpDir() {
 }
 
 /** Run a hook mode with Claude-style stdin; returns { status, stdout, json, context }. */
-export function hook(dir, mode, { session = 'sess-1', event = 'UserPromptSubmit', env = {} } = {}) {
+/** extra: more hook input fields, e.g. { tool_name, tool_input, cwd }. */
+export function hook(dir, mode, { session = 'sess-1', event = 'UserPromptSubmit', env = {}, extra = {} } = {}) {
   const r = spawnSync(process.execPath, [SCRIPT, mode], {
-    input: JSON.stringify({ cwd: dir, session_id: session, hook_event_name: event }),
+    input: JSON.stringify({ cwd: dir, session_id: session, hook_event_name: event, ...extra }),
     env: { ...ENV, ...env },
     encoding: 'utf8',
   });

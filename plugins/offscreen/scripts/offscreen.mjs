@@ -7,20 +7,23 @@
 //   reset (manual)                   - make the current state the baseline for every session
 //
 // The watched root is the session folder. If it is inside a git repository, that repository
-// is watched; otherwise every repository found below it (workspace mode).
+// is watched; otherwise the repositories below it (workspace mode): all of them when there are
+// at most workspace.maxRepos, else only the ones the AI read or changed recently (active mode).
 //
 // Hooks must never block the user: every path exits 0, errors go to <git-dir>/offscreen/error.log.
 import fs from 'node:fs';
 import path from 'node:path';
 import { loadConfig } from './lib/config.mjs';
 import { makeT, render, summarize } from './lib/format.mjs';
-import { SNAPSHOT_VERSION, appendHistory, loadSnapshot, logError, readHistory, resetSnapshots, saveSnapshot } from './lib/store.mjs';
-import { pool, resolveRepos } from './lib/workspace.mjs';
+import { SNAPSHOT_VERSION, appendHistory, hasSessionSnapshot, loadSnapshot, logError, readHistory, resetSnapshots, saveSnapshot } from './lib/store.mjs';
+import { infoFor, pool, resolveRepos } from './lib/workspace.mjs';
+import { markActive, touchedRepos } from './lib/active.mjs';
 import gitTracker from './trackers/git.mjs';
 
 const TRACKERS = { git: gitTracker };
 const MODES = ['save', 'diff', 'show', 'reset'];
 const CONCURRENCY = 8;
+const READ_ONLY_TOOLS = new Set(['Read', 'Grep', 'Glob', 'LS', 'NotebookRead']);
 
 function readStdin(timeoutMs = 3000) {
   return new Promise((resolve) => {
@@ -146,9 +149,25 @@ async function main() {
   const root = path.resolve(argValue(args, '--cwd') || process.env.CLAUDE_PROJECT_DIR || input.cwd || process.cwd());
 
   const rootCfg = loadConfig([root]);
-  const { workspace, repos } = await resolveRepos(root, rootCfg.workspace);
+  const sessionId = input.session_id || null;
+  const readOnlyTool = mode === 'save' && READ_ONLY_TOOLS.has(input.tool_name);
+  const { mode: watch, repos: watched } = await resolveRepos(root, rootCfg.workspace);
+  const workspace = watch !== 'single';
+  // A read changes nothing; only in active mode does it matter (it marks a repo as used).
+  if (readOnlyTool && watch !== 'active') return;
+
+  let repos = watched;
+  if (watch === 'active' && isHook) {
+    const touched = touchedRepos(input, root);
+    markActive(root, touched);
+    const known = new Set(watched.map((r) => r.top.toLowerCase()));
+    const touchedInfos = (await Promise.all(touched.map(infoFor))).filter(Boolean);
+    repos = [...watched, ...touchedInfos.filter((r) => !known.has(r.top.toLowerCase()))];
+    // After a read, only newly used repos need a baseline: the state the AI just saw.
+    if (readOnlyTool) repos = sessionId ? touchedInfos.filter((r) => !hasSessionSnapshot(r.gitDir, sessionId)) : [];
+  }
   if (!repos.length) {
-    if (!isHook) out(makeT(rootCfg.language)('notRepo', { cwd: root }));
+    if (!isHook) out(makeT(rootCfg.language)(watch === 'active' ? 'noActive' : 'notRepo', { cwd: root }));
     return;
   }
   // Output-wide settings (language, notify, maxChars): the repo's own config, or the workspace's.
@@ -159,7 +178,7 @@ async function main() {
     return;
   }
 
-  const env = { root, workspace, sessionId: input.session_id || null, event: input.hook_event_name || null, outT: t };
+  const env = { root, workspace, sessionId, event: input.hook_event_name || null, outT: t };
   const results = (await pool(repos, CONCURRENCY, (r) => runRepo(mode, r, env))).filter(Boolean);
   const failed = results.filter((r) => r.error);
 

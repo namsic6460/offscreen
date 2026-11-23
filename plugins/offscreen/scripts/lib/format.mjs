@@ -47,6 +47,7 @@ const STRINGS = {
     resetDone: 'offscreen: baseline reset to the current repository state.',
     disabled: 'offscreen is disabled by config (enabled: false).',
     notRepo: 'offscreen: no git repository at or below: {cwd}',
+    noActive: 'offscreen: this folder has many repositories, so only the ones the AI reads or changes are watched. None yet: {cwd}',
   },
   ko: {
     intro:
@@ -94,6 +95,7 @@ const STRINGS = {
     resetDone: 'offscreen: 기준 스냅샷을 현재 저장소 상태로 초기화했습니다.',
     disabled: 'offscreen이 설정에서 꺼져 있습니다 (enabled: false).',
     notRepo: 'offscreen: 이 폴더와 하위에 git 저장소가 없습니다: {cwd}',
+    noActive: 'offscreen: 저장소가 많은 폴더라 AI가 읽거나 수정한 저장소만 감시합니다. 아직 없습니다: {cwd}',
   },
 };
 

@@ -13,7 +13,7 @@ plugins/offscreen/
   hooks/hooks.json                  Claude Code·Codex 공용 훅
   skills/offscreen-show, skills/offscreen-reset
   scripts/offscreen.mjs             진입점: save | diff | show | reset
-  scripts/lib/{git,store,config,format,glob,workspace}.mjs
+  scripts/lib/{git,store,config,format,glob,workspace,active}.mjs
   scripts/trackers/git.mjs
 test/                               node:test
 ```
@@ -27,7 +27,10 @@ test/                               node:test
 [프롬프트 제출] UserPromptSubmit → diff → 변경이 있으면 additionalContext로 주입 → 즉시 save
 ```
 
-- 감시 루트: `--cwd` > `CLAUDE_PROJECT_DIR` > 훅 입력의 `cwd` > `process.cwd()`. 루트가 저장소 안이면 그 저장소, 아니면 하위 저장소를 찾습니다(workspace 모드).
+- 감시 루트: `--cwd` > `CLAUDE_PROJECT_DIR` > 훅 입력의 `cwd` > `process.cwd()`. 루트가 저장소 안이면 그 저장소(single), 아니면 하위 저장소를 찾습니다(`lib/workspace.mjs`).
+  - `all`: 찾은 저장소가 `workspace.maxRepos` 이하(또는 `mode: "all"`)면 전부.
+  - `active`: 그보다 많으면 최근에 쓴 저장소만(`lib/active.mjs`). 도구 훅 입력(`cwd`, `tool_input`의 경로·명령 토큰·`apply_patch` 헤더)에서 위로 올라가며 `.git`을 찾아 루트 아래 저장소를 모으고, `~/.offscreen/workspaces/<sha1(root)>.json`에 마지막 사용 시각을 남깁니다. `recentDays` 안의 저장소를 최근 순으로 `maxRepos`개까지 감시합니다.
+  - 읽기 도구(Read/Grep/Glob/LS/NotebookRead)는 active 모드에서만 의미가 있습니다. 이번 세션 스냅샷이 없는 저장소의 기준만 저장하고, 다른 모드에서는 바로 끝납니다.
 - 스냅샷: `<git-dir>/offscreen/`
   - `sessions/<session_id>.json` — 세션별 기준 (7일 지나면 정리)
   - `snapshot.json` — 마지막 기준. 새 세션은 여기서 시작
